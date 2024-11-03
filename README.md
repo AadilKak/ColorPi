@@ -1,6 +1,6 @@
 # ColorPi
 
-Welcome to **ColorPi**, a web application built using Streamlit for analyzing color data from images. This app allows users to upload images, extract relevant color information, and visualize the results in an organized manner.
+Welcome to **ColorPi**, a web application built using Streamlit for the purpose of analyzing color data from images using Rasberry Pi. This app allows users to upload images, extract relevant color information, and visualize the results in an organized manner.
 
 ## Live Demo
 
