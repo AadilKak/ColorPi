@@ -1,130 +1,197 @@
+import os
+
 import streamlit as st
-from PIL import Image
-import numpy as np
-from skimage import color
-from scipy.spatial import distance
-
-# Function to calculate color data
-def calculate_color_data(image):
-    avg_color = np.array(image).mean(axis=(0, 1))[:3]  # RGB
-    rgb = avg_color / 255  # Normalize for conversions
-
-    # Convert to different color spaces
-    hex_color = "#{:02x}{:02x}{:02x}".format(int(avg_color[0]), int(avg_color[1]), int(avg_color[2]))
-    cmyk = [round((1 - c) * 100) for c in rgb] + [round(min(1 - rgb) * 100)]  # CMYK in percent
-    lab = color.rgb2lab(rgb.reshape(1, 1, 3)).flatten()
-    lch = color.lab2lch(lab.reshape(1, 1, 3)).flatten()
-
-    # Format values
-    rgb_formatted = [int(c) for c in avg_color]  # RGB as integers
-    lab_formatted = [round(float(c), 1) for c in lab]  # CIELAB rounded to 1 decimal place
-    lch_formatted = [
-        round(float(lch[0]), 1),  # L (lightness)
-        round(float(lch[1]), 1),  # C (chroma)
-        round(float(lch[2]), 1)  # H (hue in degrees)
-    ]
-
-    return {
-        'RGB': rgb_formatted,
-        'HEX': hex_color,
-        'CMYK': cmyk,
-        'CIELAB': lab_formatted,
-        'LCHab': lch_formatted,
-        'LAB': lab
-    }
+import cv2
+import pytesseract
+import re
+import pandas as pd
+from PIL import Image  # Import PIL for image handling
+import numpy as np  # Needed for cv2 conversion
+import io  # To handle in-memory byte streams
 
 
-# Function to calculate Delta E between two LAB colors
-def delta_e(c1, c2, method='CIE76'):
-    if method == 'CIE76':
-        return distance.euclidean(c1, c2)
-    elif method == 'CIE2000':
-        return delta_e2000(c1, c2)
-    else:
-        raise ValueError("Unknown Delta E method specified.")
+# Function to read text from an image using OCR
+def read_text_from_image(image):
+    # Convert the PIL image to a NumPy array
+    image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
+    custom_config = r'--oem 3 --psm 6'  # Adjust parameters for your needs
+    text = pytesseract.image_to_string(gray, config=custom_config)
+    return text
 
 
-def delta_e2000(c1, c2):
-    # Implementation of Delta E 2000
-    L1, a1, b1 = c1
-    L2, a2, b2 = c2
+# Function to extract Delta E values
+def extract_delta_e_values(text):
+    delta_e_2000 = None
+    delta_e_76 = None
+    delta_e_2000_match = re.search(r'Delta E2000:\s*([\d.]+)', text)
+    delta_e_76_match = re.search(r'Delta E76:\s*([\d.]+)', text)
 
-    C1 = np.sqrt(a1 ** 2 + b1 ** 2)
-    C2 = np.sqrt(a2 ** 2 + b2 ** 2)
-    delta_L = L2 - L1
-    delta_a = a2 - a1
-    delta_b = b2 - b1
-    delta_C = C2 - C1
-    delta_H = np.sqrt((delta_a ** 2 + delta_b ** 2) - delta_C ** 2)
+    if delta_e_2000_match:
+        delta_e_2000 = delta_e_2000_match.group(1)
+    if delta_e_76_match:
+        delta_e_76 = delta_e_76_match.group(1)
 
-    SL = 1  # Weighting factors
-    SC = 1
-    SH = 1
-
-    # Calculate the average for L, C and H
-    L_avg = (L1 + L2) / 2
-    C_avg = (C1 + C2) / 2
-
-    T = (1 - 0.17 * np.cos(np.radians(L_avg - 30)) +
-         0.24 * np.cos(np.radians(2 * L_avg)) +
-         0.32 * np.cos(np.radians(3 * L_avg + 6)) -
-         0.20 * np.cos(np.radians(4 * L_avg - 63)))
-
-    SL = 1 + ((0.015 * ((L_avg - 50) ** 2)) / np.sqrt(20 + ((L_avg - 50) ** 2)))
-    SC = 1 + (0.045 * C_avg)
-    SH = 1 + (0.015 * C_avg * T)
-
-    delta_E = np.sqrt((delta_L / SL) ** 2 + (delta_C / SC) ** 2 + (delta_H / SH) ** 2)
-    return delta_E
+    return delta_e_2000, delta_e_76
 
 
-# Streamlit app
-st.title("Color Data Extractor")
+# Function to extract RGB values
+def extract_rgb_values(text):
+    rgb_standard = None
+    rgb_testing = None
+    rgb_match = re.findall(r'RGB:\s*([\d]+)\s*([\d]+)\s*([\d]+)', text)
 
-# Sidebar for uploading multiple images
-st.sidebar.header("Upload Images")
-uploaded_files = st.sidebar.file_uploader("Upload images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+    if len(rgb_match) >= 2:
+        rgb_standard = rgb_match[0]
+        rgb_testing = rgb_match[1]
+
+    return rgb_standard, rgb_testing
+
+
+# Function to extract CMYK values
+def extract_cmyk_values(text):
+    cmyk_standard = None
+    cmyk_testing = None
+    cmyk_match = re.findall(r'CMYK:\s*([\d]+)%\s*([\d]+)%\s*([\d]+)%\s*([\d]+)%', text)
+
+    if len(cmyk_match) >= 2:
+        cmyk_standard = cmyk_match[0]
+        cmyk_testing = cmyk_match[1]
+
+    return cmyk_standard, cmyk_testing
+
+
+# Function to extract HEX values
+def extract_hex_values(text):
+    hex_standard = None
+    hex_testing = None
+    hex_match = re.findall(r'HEX:\s*#?([A-Fa-f0-9]{6})', text)
+
+    if len(hex_match) >= 2:
+        hex_standard = hex_match[0]
+        hex_testing = hex_match[1]
+
+    return hex_standard, hex_testing
+
+
+# Function to extract CIELAB values
+def extract_cielab_values(text):
+    cielab_values = []
+    cielab_matches = re.findall(
+        r'CIELAB:\s*([-+]?\d+\.\d+)\s*([-+]?\d+\.\d+)\s*([-+]?\d+\.\d+)\s*CIELAB:\s*([-+]?\d+\.\d+)\s*([-+]?\d+\.\d+)\s*([-+]?\d+\.\d+)',
+        text)
+
+    for match in cielab_matches:
+        cielab_values.extend(match)
+
+    return cielab_values
+
+
+# Function to extract LCH values
+def extract_lch_values(text):
+    lch_values = []
+    lch_matches = re.findall(r'LCH.*?([\d.-]+)\s*([\d.-]+)\s*([\d.-]+°?)\s*LCH.*?([\d.-]+)\s*([\d.-]+)\s*([\d.-]+°?)',
+                             text)
+
+    for match in lch_matches:
+        lch_values.extend(match)
+
+    return lch_values
+
+
+# Streamlit app layout
+st.title("Delta E Value and Color Reader")
+
+# Upload multiple images
+uploaded_files = st.file_uploader("Choose images...", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+
+# Initialize a list to store data for each image
+data_list = []
+
+# Set the maximum number of retries
+max_retries = 2
 
 if uploaded_files:
-    # Create columns based on the number of uploaded images
-    cols = st.columns(len(uploaded_files))
+    # Store images as a dictionary for later display
+    image_dict = {}
+    existing_image_names = set()  # Set to track existing image names
 
-    # Define a fixed image size
-    fixed_size = (300, 300)  # Width, Height
-
-    color_data_list = []
-
-    for i, uploaded_file in enumerate(uploaded_files):
-        # Load the image
+    for uploaded_file in uploaded_files:
+        # Read the uploaded image directly into memory
         image = Image.open(uploaded_file)
 
-        # Resize the image to a fixed size
-        image_resized = image.resize(fixed_size)
+        # Strip the file extension from the image name
+        image_name = os.path.splitext(uploaded_file.name)[0]  # Remove the extension
 
-        # Display the uploaded image
-        with cols[i]:
-            st.image(image_resized, caption=f"Uploaded Image {i + 1}", use_column_width=False)
+        # Check for duplicates
+        if image_name not in existing_image_names:
+            existing_image_names.add(image_name)
 
-            # Calculate color data for the image
-            color_data = calculate_color_data(image)
-            color_data_list.append(color_data)
+            # Save the image for display later
+            image_dict[image_name] = image  # Use PIL to handle images
 
-            # Display results without brackets and quotes
-            st.write("Color Data:")
-            st.write("RGB:", ', '.join(map(str, color_data['RGB'])))
-            st.write("HEX:", color_data['HEX'])
-            st.write("CMYK:", ', '.join(f"{value}%" for value in color_data['CMYK']))
-            st.write("CIELAB:", ', '.join(map(str, color_data['CIELAB'])))
-            st.write("LCHab:", ', '.join(map(str, color_data['LCHab'])))
+            for attempt in range(max_retries):
+                # Extract text from the image
+                extracted_text = read_text_from_image(image)
 
-    # Calculate Delta E if two images are uploaded
-    if len(uploaded_files) == 2:
-        lab1 = color_data_list[0]['LAB']
-        lab2 = color_data_list[1]['LAB']
-        delta_e76 = delta_e(lab1, lab2, method='CIE76')
-        delta_e2000 = delta_e(lab1, lab2, method='CIE2000')
+                # Process the extracted text to get Delta E values
+                delta_e_2000, delta_e_76 = extract_delta_e_values(extracted_text)
 
-        # Display Delta E results
-        st.write("Color Difference:")
-        st.write("Delta E 76:", round(delta_e76, 2))
-        st.write("Delta E 2000:", round(delta_e2000, 2))
+                # Extract RGB values
+                rgb_standard, rgb_testing = extract_rgb_values(extracted_text)
+
+                # Extract CMYK values
+                cmyk_standard, cmyk_testing = extract_cmyk_values(extracted_text)
+
+                # Extract HEX values
+                hex_standard, hex_testing = extract_hex_values(extracted_text)
+
+                # Extract CIELAB values
+                cielab_values = extract_cielab_values(extracted_text)
+
+                # Extract LCH values
+                lch_values = extract_lch_values(extracted_text)
+
+                # Check if the data extraction was successful
+                if all([delta_e_2000, delta_e_76, rgb_standard, rgb_testing, cmyk_standard, cmyk_testing, hex_standard,
+                        hex_testing, cielab_values, lch_values]):
+                    # Append data for the current image to the list
+                    data_list.append({
+                        "Image": image_name,
+                        "Delta E2000": delta_e_2000,
+                        "Delta E76": delta_e_76,
+                        "Standard RGB": f"{rgb_standard[0]}, {rgb_standard[1]}, {rgb_standard[2]}",
+                        "Testing RGB": f"{rgb_testing[0]}, {rgb_testing[1]}, {rgb_testing[2]}",
+                        "Standard CMYK": f"{cmyk_standard[0]}%, {cmyk_standard[1]}%, {cmyk_standard[2]}%, {cmyk_standard[3]}%",
+                        "Testing CMYK": f"{cmyk_testing[0]}%, {cmyk_testing[1]}%, {cmyk_testing[2]}%, {cmyk_testing[3]}%",
+                        "Standard HEX": f"#{hex_standard}",
+                        "Testing HEX": f"#{hex_testing}",
+                        "Standard CIELAB": f"{cielab_values[0]}, {cielab_values[1]}, {cielab_values[2]}",
+                        "Testing CIELAB": f"{cielab_values[3]}, {cielab_values[4]}, {cielab_values[5]}",
+                        "Standard LCH": f"{lch_values[0]}, {lch_values[1]}, {lch_values[2]}",
+                        "Testing LCH": f"{lch_values[3]}, {lch_values[4]}, {lch_values[5]}"
+                    })
+                    break  # Exit retry loop if successful
+                else:
+                    # Display less emphasized failure messages
+                    st.sidebar.write(f"Attempt {attempt + 1} failed for {image_name}. Retrying...")
+
+            else:
+                st.sidebar.write(f"Failed to extract data from {image_name} after {max_retries} attempts.")
+
+    # Create a DataFrame from the list of data
+    df = pd.DataFrame(data_list)
+
+    # Display the DataFrame as a wider table
+    st.subheader("Extracted Color Data:")
+
+    if not df.empty:  # Check if the DataFrame is not empty before displaying
+        st.dataframe(df, use_container_width=True)  # Use container width for better visibility
+
+        # Display images when the user clicks on the image name
+        selected_image_name = st.selectbox("Select an Image to View:", df["Image"].tolist())
+
+        if selected_image_name:
+            st.image(image_dict[selected_image_name], caption=selected_image_name, use_column_width=True)
+    else:
+        st.write("No valid data extracted from the images.")
