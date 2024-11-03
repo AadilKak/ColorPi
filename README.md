@@ -5,7 +5,11 @@ Welcome to **ColorPi**, a web application built using Streamlit for analyzing co
 ## Live Demo
 
 You can access the live application here: [ColorPi Live Demo](https://colorpi.streamlit.app/)
-https://youtu.be/FKGWb4wqcBY
+
+## Walkthrough
+
+https://github.com/user-attachments/assets/64debbba-7e98-473a-b7cd-ff82a89aef5b
+
 ## Features
 
 - **Image Upload**: Easily upload multiple images to analyze color data.
